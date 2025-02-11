@@ -13,6 +13,7 @@ def main():
         os.mkdir(".git")
         os.mkdir(".git/objects")
         os.mkdir(".git/refs")
+        flag = sys.argv[2]
         with open(".git/HEAD", "w") as f:
             f.write("ref: refs/heads/main\n")
         print("Initialized git directory")
@@ -21,6 +22,8 @@ def main():
 
     elif command == "cat-file":
         flag = sys.argv[2]
+        if flag != '-p': 
+            raise RuntimeError("only -p flag allowed") 
         hash = str(sys.argv[3])
 
         try:
@@ -35,6 +38,8 @@ def main():
 
     elif command == "hash-object":
         flag = sys.argv[2]
+        if flag != '-w': 
+            raise RuntimeError("only -w flag allowed") 
         filename = sys.argv[3]
 
         with open(filename, 'rb') as f:
