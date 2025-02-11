@@ -12,8 +12,7 @@ def main():
     if command == "init":
         os.mkdir(".git")
         os.mkdir(".git/objects")
-        os.mkdir(".git/refs")
-        flag = sys.argv[2]
+        os.mkdir(".git/refs") 
         with open(".git/HEAD", "w") as f:
             f.write("ref: refs/heads/main\n")
         print("Initialized git directory")
@@ -61,7 +60,25 @@ def main():
             print(sha1Hash)
 
 
-
+    elif command == "ls-tree":
+        flag = sys.argv[2]
+        if flag != "--name-only":
+            raise RuntimeError("only --name-only flag allowed")
+        
+        file_hash = sys.argv[3]
+        file_path = f".git/objects/{file_hash[:2]}/{file_hash[2:]}"
+        
+        with open(file_path, "rb") as file:
+            contents = zlib.decompress(file.read())
+            _, binary = contents.split(b"\x00", maxsplit=1)
+            
+            while binary:
+                mode, binary = binary.split(b" ", maxsplit=1)
+                name, binary = binary.split(b"\x00", maxsplit=1)
+                sha1 = binary[:20]
+                binary = binary[20:]
+                
+                print(name.decode())
                             
     else:
         raise RuntimeError(f"Unknown command #{command}")
