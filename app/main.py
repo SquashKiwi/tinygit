@@ -3,18 +3,32 @@ import sys
 import os
 import zlib
 from pathlib import Path
+import time
+from datetime import timezone, datetime
+
+DEV_MODE = True
 
 def write_blob(sha1, store, write=True):
-    
-    if write:
-        dir_path = f".git/objects/{sha1[:2]}"
-        file_path = f"{dir_path}/{sha1[2:]}"
-        os.makedirs(dir_path, exist_ok=True)
-        compressed_content = zlib.compress(store)
-        with open(file_path, 'wb') as blob:
-            blob.write(compressed_content)
+
+    dir_path = f".git/objects/{sha1[:2]}"
+    file_path = f"{dir_path}/{sha1[2:]}"
+    os.makedirs(dir_path, exist_ok=True)
+    compressed_content = zlib.compress(store)
+    with open(file_path, 'wb') as blob:
+        blob.write(compressed_content)
 
     return sha1
+
+def write_object(parent: Path, ty: str, content: bytes) -> str:
+    content = ty.encode() + b" " + f"{len(content)}".encode() + b"\0" + content
+    hash = hashlib.sha1(content, usedforsecurity=False).hexdigest()
+    compressed_content = zlib.compress(content)
+    pre = hash[:2]
+    post = hash[2:]
+    p = parent / ".git" / "objects" / pre / post
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_bytes(compressed_content)
+    return hash
 
 
 def write_tree(path):
@@ -76,13 +90,45 @@ def ls_tree():
             print(f"{name.decode()} {sha1_hex}")
 
 
+def commit_tree():
+    args = sys.argv[2:]
+    print(args)
+    tree_sha = args[0]
+    if '-p' in args:
+        commit_sha = args[2]
+        message = args[4]
+    else:
+        try:
+            message = args[2]
+        except IndexError:
+            print("commit message cannot be empty")
+            exit(1)
+        
+    
+    content = b"tree %b\n" % tree_sha.encode()
+    
+    if '-p' in args:
+        content += b"parent %b\n" % commit_sha.encode()
+
+    content += b''.join(
+        [   b"author abc <example@gmail.com>" + f" {int(time.time())} {datetime.now().astimezone().strftime('%z')}\n\n".encode(),
+            b"committer abc <example@gmail.com>" + f" {int(time.time())} {datetime.now().astimezone().strftime('%z')}\n\n".encode(),
+            message.encode(),
+            b"\n",
+        ])
+    print(content)
+
+    hash = write_object(Path("."), "commit", content)
+    print(hash)
+
+
 def main():
     
     print("TinyGit Running...", file=sys.stderr)
 
     command = sys.argv[1]
 
-    if command != "init" and not os.path.isdir(".git"):
+    if command != "init" and not os.path.isdir(".git") and not DEV_MODE:
         print("Error: not a git repository (or any of the parent directories): .git", file=sys.stderr)
         sys.exit(1)
 
@@ -124,15 +170,17 @@ def main():
         header = f"blob {length}\0".encode()
         store = header + content
         sha1Hash = hashlib.sha1(store).hexdigest()
-        compressed_content = zlib.compress(store)
-        
-        dir_path = f".git/objects/{sha1Hash[:2]}"
-        file_path = f"{dir_path}/{sha1Hash[2:]}"
-        os.makedirs(dir_path, exist_ok=True)
 
-        with open(file_path, 'wb') as blob:
-            blob.write(compressed_content)
-        print(sha1Hash)
+        print(write_blob(sha1Hash, store))
+        # compressed_content = zlib.compress(store)
+        
+        # dir_path = f".git/objects/{sha1Hash[:2]}"
+        # file_path = f"{dir_path}/{sha1Hash[2:]}"
+        # os.makedirs(dir_path, exist_ok=True)
+
+        # with open(file_path, 'wb') as blob:
+        #     blob.write(compressed_content)
+        # print(sha1Hash)
 
 
     elif command == "ls-tree":
@@ -141,6 +189,9 @@ def main():
     elif command == "write-tree":
         # This assumes all files in directory are staged
         print(write_tree(os.path.curdir))
+
+    elif command == "commit-tree":
+        commit_tree()
         
                             
     else:
