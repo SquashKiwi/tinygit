@@ -5,8 +5,24 @@ import zlib
 from pathlib import Path
 import time
 from datetime import timezone, datetime
+import urllib.request
+from typing import Tuple, List, cast
+import struct
 
 DEV_MODE = True
+
+def init_repo(parent):
+    try:
+        os.mkdir(f"{parent}/.git")
+        os.mkdir(f"{parent}/.git/objects")
+        os.mkdir(f"{parent}/.git/refs") 
+        with open(f"{parent}/.git/HEAD", "w") as f:
+            f.write("ref: refs/heads/main\n")
+        print("Initialized git directory")
+    except FileExistsError:
+        print(f"Error: there is an existing git repository here. Path: {parent}")
+        exit(1)
+
 
 def write_blob(sha1, store, write=True):
 
@@ -65,6 +81,14 @@ def write_tree(path):
 
     return sha1            
 
+def read_object(parent: Path, sha: str) -> Tuple[str, bytes]:
+    pre = sha[:2]
+    post = sha[2:]
+    p = parent / ".git" / "objects" / pre / post
+    bs = p.read_bytes()
+    head, content = zlib.decompress(bs).split(b"\0", maxsplit=1)
+    ty, _ = head.split(b" ")
+    return ty.decode(), content
 
 def ls_tree():
     flag = sys.argv[2]
@@ -92,7 +116,7 @@ def ls_tree():
 
 def commit_tree():
     args = sys.argv[2:]
-    print(args)
+    # print(args)
     tree_sha = args[0]
     if '-p' in args:
         commit_sha = args[2]
@@ -116,7 +140,7 @@ def commit_tree():
             message.encode(),
             b"\n",
         ])
-    print(content)
+    # print(content)
 
     hash = write_object(Path("."), "commit", content)
     print(hash)
@@ -133,14 +157,10 @@ def main():
         sys.exit(1)
 
     if command == "init":
-        os.mkdir(".git")
-        os.mkdir(".git/objects")
-        os.mkdir(".git/refs") 
-        with open(".git/HEAD", "w") as f:
-            f.write("ref: refs/heads/main\n")
-        print("Initialized git directory")
-    
-    
+        parent = '.'
+        if len(sys.argv) > 2:
+            parent = sys.argv[2]
+        init_repo(parent)    
 
     elif command == "cat-file":
         flag = sys.argv[2]
@@ -155,8 +175,6 @@ def main():
 
         except FileNotFoundError:
             print(f"Error: object {hash} not found", file=sys.stderr)
-
-
 
     elif command == "hash-object":
         flag = sys.argv[2]
@@ -182,7 +200,6 @@ def main():
         #     blob.write(compressed_content)
         # print(sha1Hash)
 
-
     elif command == "ls-tree":
         ls_tree()
 
@@ -192,7 +209,172 @@ def main():
 
     elif command == "commit-tree":
         commit_tree()
+
+    elif command == "clone":
+        parent = Path('.')
+        arg_length = len(sys.argv)
         
+        if arg_length < 3:
+            print("Error: no URL provided")
+            exit(1)
+
+        url = sys.argv[2]
+
+        if arg_length > 3:
+            parent = sys.argv[3]
+
+        init_repo(parent)
+
+        try:
+            req = urllib.request.Request(f"{url}/info/refs?service=git-upload-pack")
+            with urllib.request.urlopen(req) as f:
+                refs = {
+                    bs[1].decode(): bs[0].decode()
+                    for bs0 in cast(bytes, f.read()).split(b"\n")
+                    if (bs1 := bs0[4:])
+                    and not bs1.startswith(b"#")
+                    and (bs2 := bs1.split(b"\0")[0])
+                    and (bs := (bs2[4:] if bs2.endswith(b"HEAD") else bs2).split(b" "))
+                }
+        except urllib.error.URLError as e:
+            print(f"Error connecting to repository: {e}")
+            exit(1)
+
+        # Create necessary directories and write refs
+        for name, sha in refs.items():
+            ref_path = Path(parent) / ".git" / name
+            ref_path.parent.mkdir(parents=True, exist_ok=True)
+            ref_path.write_text(sha + "\n")
+
+        body = (
+                b"0011command=fetch0001000fno-progress"
+                + b"".join(b"0032want " + ref.encode() + b"\n" for ref in refs.values())
+                + b"0009done\n0000"
+            )
+        
+        req = urllib.request.Request(
+                f"{url}/git-upload-pack",
+                data=body,
+                headers={"Git-Protocol": "version=2"},
+            )
+        
+        with urllib.request.urlopen(req) as f:
+            pack_bytes = cast(bytes, f.read())
+
+        pack_lines = []
+        while pack_bytes:
+            line_len = int(pack_bytes[:4], 16)
+            if line_len == 0:
+                break
+            pack_lines.append(pack_bytes[4:line_len])
+            pack_bytes = pack_bytes[line_len:]
+        pack_file = b"".join(l[1:] for l in pack_lines[1:])
+
+
+        def next_size_type(bs: bytes) -> Tuple[str, int, bytes]:
+            ty = (bs[0] & 0b_0111_0000) >> 4
+            match ty:
+                case 1:
+                    ty = "commit"
+                case 2:
+                    ty = "tree"
+                case 3:
+                    ty = "blob"
+                case 4:
+                    ty = "tag"
+                case 6:
+                    ty = "ofs_delta"
+                case 7:
+                    ty = "ref_delta"
+                case _:
+                    ty = "unknown"
+            size = bs[0] & 0b_0000_1111
+            i = 1
+            off = 4
+            while bs[i - 1] & 0b_1000_0000:
+                size += (bs[i] & 0b_0111_1111) << off
+                off += 7
+                i += 1
+            return ty, size, bs[i:]
+        
+        def next_size(bs: bytes) -> Tuple[int, bytes]:
+            size = bs[0] & 0b_0111_1111
+            i = 1
+            off = 7
+            while bs[i - 1] & 0b_1000_0000:
+                size += (bs[i] & 0b_0111_1111) << off
+                off += 7
+                i += 1
+            return size, bs[i:]
+        
+        pack_file = pack_file[8:]  # strip header and version
+        n_objs, *_ = struct.unpack("!I", pack_file[:4])
+        pack_file = pack_file[4:]
+        for _ in range(n_objs):
+            ty, _, pack_file = next_size_type(pack_file)
+            match ty:
+                case "commit" | "tree" | "blob" | "tag":
+                    dec = zlib.decompressobj()
+                    content = dec.decompress(pack_file)
+                    pack_file = dec.unused_data
+                    write_object(parent, ty, content)
+                case "ref_delta":
+                    obj = pack_file[:20].hex()
+                    pack_file = pack_file[20:]
+                    dec = zlib.decompressobj()
+                    content = dec.decompress(pack_file)
+                    pack_file = dec.unused_data
+                    target_content = b""
+                    base_ty, base_content = read_object(parent, obj)
+                    # base and output sizes
+                    _, content = next_size(content)
+                    _, content = next_size(content)
+                    while content:
+                        is_copy = content[0] & 0b_1000_0000
+                        if is_copy:
+                            data_ptr = 1
+                            offset = 0
+                            size = 0
+                            for i in range(0, 4):
+                                if content[0] & (1 << i):
+                                    offset |= content[data_ptr] << (i * 8)
+                                    data_ptr += 1
+                            for i in range(0, 3):
+                                if content[0] & (1 << (4 + i)):
+                                    size |= content[data_ptr] << (i * 8)
+                                    data_ptr += 1
+                            # do something with offset and size
+                            content = content[data_ptr:]
+                            target_content += base_content[offset : offset + size]
+                        else:
+                            size = content[0]
+                            append = content[1 : size + 1]
+                            content = content[size + 1 :]
+                            # do something with append
+                            target_content += append
+                    write_object(parent, base_ty, target_content)
+                case _:
+                    raise RuntimeError("Not implemented")
+        # render tree
+        def render_tree(parent: Path, dir: Path, sha: str):
+            dir.mkdir(parents=True, exist_ok=True)
+            _, tree = read_object(parent, sha)
+            while tree:
+                mode, tree = tree.split(b" ", 1)
+                name, tree = tree.split(b"\0", 1)
+                sha = tree[:20].hex()
+                tree = tree[20:]
+                match mode:
+                    case b"40000":
+                        render_tree(parent, dir / name.decode(), sha)
+                    case b"100644":
+                        _, content = read_object(parent, sha)
+                        Path(dir / name.decode()).write_bytes(content)
+                    case _:
+                        raise RuntimeError("Not implemented")
+        _, commit = read_object(parent, refs["HEAD"])
+        tree_sha = commit[5 : 40 + 5].decode()
+        render_tree(parent, parent, tree_sha)
                             
     else:
         raise RuntimeError(f"Unknown command #{command}")
