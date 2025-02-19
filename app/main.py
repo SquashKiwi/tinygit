@@ -9,7 +9,7 @@ import urllib.request
 from typing import Tuple, List, cast
 import struct
 
-DEV_MODE = True
+DEV_MODE = False
 
 def init_repo(parent):
     try:
