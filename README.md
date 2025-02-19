@@ -18,7 +18,7 @@ To run the script, navigate to desired directory in terminal. <br>
 
 Then perform desired action as such:<br>
 
-[For git init] `<path to main.py> init`
+[For git init] `<path to tinygit.py> init`
 
 <br><br>
 Check out [git documentation](https://git-scm.com/docs) for help with git commands.
