@@ -223,8 +223,10 @@ def main():
         if arg_length > 3:
             parent = sys.argv[3]
 
+        print("Initializing repository...")
         init_repo(parent)
-
+        
+        print(f"Cloning from {url}...")
         try:
             req = urllib.request.Request(f"{url}/info/refs?service=git-upload-pack")
             with urllib.request.urlopen(req) as f:
@@ -239,13 +241,16 @@ def main():
         except urllib.error.URLError as e:
             print(f"Error connecting to repository: {e}")
             exit(1)
-
-        # Create necessary directories and write refs
+        print("Fetching repository information... done")
+        print(f"Remote contains {len(refs)} refs")
+        
+        print("Setting up local refs...")
         for name, sha in refs.items():
             ref_path = Path(parent) / ".git" / name
             ref_path.parent.mkdir(parents=True, exist_ok=True)
             ref_path.write_text(sha + "\n")
-
+        print("Local refs are set up.")
+        
         body = (
                 b"0011command=fetch0001000fno-progress"
                 + b"".join(b"0032want " + ref.encode() + b"\n" for ref in refs.values())
@@ -258,9 +263,12 @@ def main():
                 headers={"Git-Protocol": "version=2"},
             )
         
+        print("Downloading pack file...", end="", flush=True)
         with urllib.request.urlopen(req) as f:
             pack_bytes = cast(bytes, f.read())
-
+        print(f" received {len(pack_bytes):,} bytes")
+        
+        # Break pack data into lines
         pack_lines = []
         while pack_bytes:
             line_len = int(pack_bytes[:4], 16)
@@ -269,8 +277,7 @@ def main():
             pack_lines.append(pack_bytes[4:line_len])
             pack_bytes = pack_bytes[line_len:]
         pack_file = b"".join(l[1:] for l in pack_lines[1:])
-
-
+        
         def next_size_type(bs: bytes) -> Tuple[str, int, bytes]:
             ty = (bs[0] & 0b_0111_0000) >> 4
             match ty:
@@ -307,10 +314,16 @@ def main():
                 i += 1
             return size, bs[i:]
         
-        pack_file = pack_file[8:]  # strip header and version
+        # Strip pack header and version
+        pack_file = pack_file[8:]
         n_objs, *_ = struct.unpack("!I", pack_file[:4])
         pack_file = pack_file[4:]
-        for _ in range(n_objs):
+        print(f"Pack file contains {n_objs} objects")
+        
+        # Process pack objects with progress display
+        for idx in range(n_objs):
+            if idx % 10 == 0:
+                print(f"\rProcessing objects... {idx}/{n_objs}", end="", flush=True)
             ty, _, pack_file = next_size_type(pack_file)
             match ty:
                 case "commit" | "tree" | "blob" | "tag":
@@ -326,7 +339,7 @@ def main():
                     pack_file = dec.unused_data
                     target_content = b""
                     base_ty, base_content = read_object(parent, obj)
-                    # base and output sizes
+                    # Skip base and output sizes
                     _, content = next_size(content)
                     _, content = next_size(content)
                     while content:
@@ -343,19 +356,19 @@ def main():
                                 if content[0] & (1 << (4 + i)):
                                     size |= content[data_ptr] << (i * 8)
                                     data_ptr += 1
-                            # do something with offset and size
                             content = content[data_ptr:]
                             target_content += base_content[offset : offset + size]
                         else:
                             size = content[0]
                             append = content[1 : size + 1]
                             content = content[size + 1 :]
-                            # do something with append
                             target_content += append
                     write_object(parent, base_ty, target_content)
                 case _:
                     raise RuntimeError("Not implemented")
-        # render tree
+        print("\rProcessing objects... done" + " " * 20)
+        
+        # Render the working tree
         def render_tree(parent: Path, dir: Path, sha: str):
             dir.mkdir(parents=True, exist_ok=True)
             _, tree = read_object(parent, sha)
@@ -372,9 +385,12 @@ def main():
                         Path(dir / name.decode()).write_bytes(content)
                     case _:
                         raise RuntimeError("Not implemented")
+        
         _, commit = read_object(parent, refs["HEAD"])
         tree_sha = commit[5 : 40 + 5].decode()
         render_tree(parent, parent, tree_sha)
+        
+        print(f"Successfully cloned {url.split('/')[-1]}")
                             
     else:
         raise RuntimeError(f"Unknown command #{command}")
