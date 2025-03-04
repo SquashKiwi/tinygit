@@ -152,7 +152,7 @@ def main():
 
     command = sys.argv[1]
 
-    if command != "init" and not os.path.isdir(".git") and not DEV_MODE:
+    if (command != "init" and not os.path.isdir(".git") and not DEV_MODE) and command != "clone":
         print("Error: not a git repository (or any of the parent directories): .git", file=sys.stderr)
         sys.exit(1)
 
@@ -178,7 +178,7 @@ def main():
 
     elif command == "hash-object":
         flag = sys.argv[2]
-        if flag != '-w': 
+        if flag != '-w':
             raise RuntimeError("only -w flag allowed") 
         filename = sys.argv[3]
 
